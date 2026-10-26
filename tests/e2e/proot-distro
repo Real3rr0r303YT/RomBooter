@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Fake proot-distro for tests/e2e-docker.sh and tests/e2e-copy.sh: every "distro" is a docker container (host network).
+#   install ALIAS                 -> docker run -d rb-e2e-ALIAS
+#   login ALIAS [--user U] -- CMD -> docker exec -i [-u U] rb-e2e-ALIAS CMD
+set -u
+HOST_ARCH=$(uname -m)
+# Gentoo: the official stage3 for this host from Gentoo's own servers, imported locally. No registry
+# (Docker Hub's gentoo/stage3 fails with "unauthorized"/missing arm64 tags for some setups).
+gentoo_image() {
+  local tag=rb-e2e/gentoo-stage3 a m path sum f
+  docker image inspect "$tag" >/dev/null 2>&1 && { echo "$tag"; return; }
+  case $HOST_ARCH in aarch64|arm64) a=arm64 ;; *) a=amd64 ;; esac
+  f=$(mktemp)
+  for m in https://distfiles.gentoo.org https://gentoo.osuosl.org; do
+    path=$(curl -fsSL "$m/releases/$a/autobuilds/latest-stage3-$a-openrc.txt" |
+      awk '/^[0-9TZ]+\/stage3-[a-z0-9]+-openrc-[0-9TZ]+\.tar\.xz / {print $1; exit}') || continue
+    [[ -n $path ]] || continue
+    sum=$(curl -fsSL "$m/releases/$a/autobuilds/$path.sha256" | awk '/stage3-.*\.tar\.xz/ {print $1; exit}')
+    curl -fsSL -o "$f" "$m/releases/$a/autobuilds/$path" || continue
+    if [[ $(sha256sum "$f" | cut -d' ' -f1) == "$sum" ]] && docker import "$f" "$tag" >/dev/null; then
+      rm -f "${f:?}"; echo "$tag"; return
+    fi
+  done
+  rm -f "${f:?}"
+  # Offline/sandboxed fallback: a previously pulled image, if any
+  if docker image inspect gentoo/stage3 >/dev/null 2>&1; then
+    echo "fake proot-distro: official stage3 unreachable, using local gentoo/stage3" >&2; echo gentoo/stage3; return
+  fi
+  echo "fake proot-distro: cannot fetch the official Gentoo stage3" >&2; return 1
+}
+img() {
+  case $1 in
+    # archlinux:latest is x86_64-only; Arch Linux ARM community image on ARM64 hosts
+    archlinux) case $HOST_ARCH in aarch64|arm64) echo menci/archlinuxarm:latest ;; *) echo archlinux:latest ;; esac ;;
+    debian) echo debian:stable ;; ubuntu) echo "${RB_E2E_UBUNTU_IMAGE:-ubuntu:24.04}" ;;
+    alpine) echo alpine:latest ;; fedora) echo fedora:latest ;; kali) echo kalilinux/kali-rolling ;;
+    gentoo) gentoo_image ;; *) return 1 ;;
+  esac
+}
+cmd=$1; alias=$2; shift 2
+case $cmd in
+  install)
+    docker rm -f "rb-e2e-$alias" >/dev/null 2>&1
+    proxy=(); ca=()
+    # Sandboxed CI/agents: forward an HTTPS-only egress proxy and its CA into the container.
+    if [[ -n ${HTTPS_PROXY:-} ]]; then
+      proxy=(-e "https_proxy=$HTTPS_PROXY" -e "HTTPS_PROXY=$HTTPS_PROXY" -e "no_proxy=localhost,127.0.0.1")
+    fi
+    if [[ -n ${RB_E2E_CA:-} ]]; then
+      ca=(-v "$RB_E2E_CA:/rbca.crt:ro" -e SSL_CERT_FILE=/rbca.crt -e CURL_CA_BUNDLE=/rbca.crt)
+    fi
+    image=$(img "$alias") || exit 1
+    docker run -d --network host "${proxy[@]}" "${ca[@]}" --name "rb-e2e-$alias" "$image" \
+      sleep infinity >/dev/null || exit
+    [[ -n ${RB_E2E_CA:-} ]] || exit 0
+    # Only HTTPS goes through such a proxy: move apt to https and trust the proxy CA everywhere.
+    exec docker exec "rb-e2e-$alias" sh -c '
+      for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+        [ -f "$f" ] && cat /rbca.crt >>"$f"
+      done
+      if [ -d /etc/apt ]; then
+        sed -i "s#http://#https://#g" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null
+        echo "Acquire::https::CAInfo \"/rbca.crt\";" >/etc/apt/apt.conf.d/99rb-e2e-ca
+      fi
+      true' ;;
+  login)
+    opts=()
+    while [[ $1 != -- ]]; do
+      [[ $1 == --user ]] && { opts+=(-u "$2"); shift; }
+      shift
+    done
+    shift
+    # Like proot (PTRACE_O_EXITKILL): when a session is stopped, everything it started dies with
+    # it. docker exec does not forward signals, so on TERM/INT/HUP kill the session user's
+    # processes in the container (one session per container in these tests).
+    user=""; [[ ${opts[0]:-} == -u ]] && user=${opts[1]}
+    trap '[[ -n $user ]] && docker exec "rb-e2e-$alias" pkill -KILL -u "$user" >/dev/null 2>&1; exit 143' TERM INT HUP
+    docker exec -i "${opts[@]}" "rb-e2e-$alias" "$@" <&0 &
+    wait $!
+    exit $? ;;
+esac
+echo "fake proot-distro: unsupported $cmd" >&2; exit 1

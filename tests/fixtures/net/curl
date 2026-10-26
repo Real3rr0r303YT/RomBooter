@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Fake curl for tests/fetch.sh: serves URLs from $FAKE_NET/<host>/<path>.
+# Hosts listed in $FAKE_DOWN fail like an unreachable mirror. Supports -o FILE (else stdout).
+out=""; url=""
+while (($#)); do
+  case $1 in
+    -o) out=$2; shift 2 ;;
+    -C|--retry|--retry-delay|--connect-timeout) shift 2 ;;
+    -*) shift ;;
+    *) url=$1; shift ;;
+  esac
+done
+rest=${url#*://}; host=${rest%%/*}
+echo "$url" >>"$FAKE_NET/requests"
+[[ " ${FAKE_DOWN:-} " == *" $host "* ]] && exit 7
+f="$FAKE_NET/$rest"
+[[ -f $f ]] || exit 22
+if [[ -n $out ]]; then cat "$f" >"$out"; else cat "$f"; fi

@@ -1,0 +1,2 @@
+#!/bin/sh
+[ "$1" = ro.build.version.sdk ] && echo "${FAKE_SDK:-33}" || echo 13

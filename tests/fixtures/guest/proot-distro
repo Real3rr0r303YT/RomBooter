@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Fake proot-distro for tests/launcher.sh: containers are directories under $FAKE_ROOT/<alias>.
+# Supports what the setup's --refresh and the start scripts use:
+#   login ALIAS [--user U] -- /bin/sh -c SCRIPT sh GUEST_PATH [ARGS]   (paths mapped into the dir)
+#   login ALIAS [--user U] -- /bin/sh -c ':'                           (container exists?)
+set -u
+[[ ${1:-} == login ]] || { echo "fake proot-distro: unsupported '$*'" >&2; exit 1; }
+alias=$2; shift 2
+root="$FAKE_ROOT/$alias"
+[[ -d $root ]] || { echo "Error: distribution $alias is not installed" >&2; exit 1; }
+while [[ ${1:-} != -- ]]; do shift; done
+shift
+echo "$alias: $*" >>"$FAKE_ROOT/calls"
+if [[ $1 == /bin/sh && $2 == -c ]]; then
+  script=$3; shift 3
+  if (($# >= 2)); then
+    # $1 is $0 for the script, $2 the guest path: map it into the container directory
+    name=$1; path=$2; shift 2
+    exec /bin/sh -c "$script" "$name" "$root$path" "$@"
+  fi
+  [[ $script == ':' ]] && exit 0
+  [[ $script == 'test -x /usr/local/bin/rb-session' ]] && { [[ -x $root/usr/local/bin/rb-session ]]; exit; }
+fi
+echo "fake proot-distro: unsupported command '$*'" >&2; exit 1

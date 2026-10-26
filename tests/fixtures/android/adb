@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Fake adb for tests/launcher.sh: accepts pairing code 123456 on port 37000, connect on 41000,
+# and keeps the two phantom-killer settings in files.
+st="$FAKE_ADB_STATE"; mkdir -p "$st"; echo "$*" >>"$st/calls"
+[[ $1 == -s ]] && { [[ $2 == 127.0.0.1:41000 ]] || exit 1; shift 2; }
+case $1 in
+  pair) [[ $2 == 127.0.0.1:37000 && $3 == 123456 ]] && echo "Successfully paired" ;;
+  connect) [[ $2 == 127.0.0.1:41000 ]] && echo "connected" ;;
+  get-state) echo device ;;
+  disconnect) : ;;
+  shell)
+    shift
+    case $* in
+      *"get activity_manager max_phantom_processes"*) cat "$st/max" 2>/dev/null || echo null ;;
+      *"get global settings_enable_monitor_phantom_procs"*) cat "$st/flag" 2>/dev/null || echo null ;;
+      *"put activity_manager max_phantom_processes 2147483647"*) echo 2147483647 >"$st/max"; echo false >"$st/flag" ;;
+      *"delete activity_manager max_phantom_processes"*) rm -f "$st/max"; echo true >"$st/flag" ;;
+    esac ;;
+esac
