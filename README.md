@@ -107,3 +107,7 @@ If RomBooter is useful to you, you can support development:
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+---
+
+<p align="center"><b>Made by <a href="https://github.com/Real3rr0r303YT">Real3rr0r303YT</a></b> · GPL-3.0</p>
